@@ -1,6 +1,6 @@
 import express from "express";
 import cors from "cors";
-// import connectDB from "./config/db.js";
+import connectDB from "./config/db.js";
 import dotenv from "dotenv";
 import userRouter from "./routes/userRouter.js";
 import "./config/firebase.js"; // Initialize Firebase
@@ -9,7 +9,7 @@ dotenv.config();
 
 const app = express();
 
-// connectDB();
+connectDB();
 
 app.use(cors());
 app.use(express.json());
