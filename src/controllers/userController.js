@@ -1,14 +1,12 @@
 import admin from "../config/firebase.js";
-import { Customer, Driver } from "../modules/userModule.js";
-import { findCoordinatesByAddress } from "../utils/locationUtils.js";
 
 export const createUser = async (req, res) => {
-  const { name, email, password, confirmPassword, phone, address, role, license_number, vehicle_info } = req.body;
+  const { name, email, password, confirmPassword, address, role } = req.body;
 
   try {
     // Validate input
-    if (!name || !email || !password || !confirmPassword || !phone || !address || !role) {
-      return res.status(400).json({ message: "All required fields must be provided (name, email, password, confirmPassword, phone, address, role)" });
+    if (!name || !email || !password || !confirmPassword || !address || !role) {
+      return res.status(400).json({ message: "All required fields must be provided" });
     }
 
     if (password !== confirmPassword) {
@@ -17,38 +15,6 @@ export const createUser = async (req, res) => {
 
     if (!["customer", "driver"].includes(role)) {
       return res.status(400).json({ message: "Role must be either 'customer' or 'driver'" });
-    }
-
-    // Additional validation for drivers
-    if (role === "driver" && !license_number) {
-      return res.status(400).json({ message: "License number is required for drivers" });
-    }
-
-    // Find coordinates based on address
-    const locationData = findCoordinatesByAddress(address);
-    
-    let current_location;
-    if (locationData) {
-      // District found in address - use mapped coordinates
-      current_location = {
-        address: address,
-        latitude: locationData.latitude,
-        longitude: locationData.longitude
-      };
-    } else {
-      // No district found - require manual coordinates
-      return res.status(400).json({ 
-        message: "Could not determine location from address. Please ensure your address includes a valid Sri Lankan district/city.",
-        suggestion: "Include districts like Colombo, Kandy, Galle, etc. in your address"
-      });
-    }
-
-    // Check if user already exists in MongoDB
-    const existingCustomer = await Customer.findOne({ email });
-    const existingDriver = await Driver.findOne({ email });
-    
-    if (existingCustomer || existingDriver) {
-      return res.status(400).json({ message: "User already exists with this email" });
     }
 
     // Create user in Firebase
@@ -60,79 +26,24 @@ export const createUser = async (req, res) => {
 
     // Set custom claims for additional user data
     await admin.auth().setCustomUserClaims(userResponse.uid, {
+      address: address,
       role: role,
     });
-
-    // Generate unique IDs
-    const generateUniqueId = (role) => {
-      const timestamp = Date.now().toString(36);
-      const random = Math.random().toString(36).substring(2, 8);
-      const prefix = role === "customer" ? "C" : "D";
-      return `${prefix}${timestamp}${random}`.toUpperCase();
-    };
-
-    // Prepare common user data
-    const commonUserData = {
-      firebaseUID: userResponse.uid,
-      name: name,
-      email: email,
-      phone: phone,
-      current_location: current_location,
-      role: role,
-    };
-
-    let savedUser;
-
-    // Create user in appropriate MongoDB collection based on role
-    if (role === "customer") {
-      const customerData = {
-        ...commonUserData,
-        customer_id: generateUniqueId("customer"),
-      };
-      
-      const customer = new Customer(customerData);
-      savedUser = await customer.save();
-    } else if (role === "driver") {
-      const driverData = {
-        ...commonUserData,
-        driver_id: generateUniqueId("driver"),
-        license_number: license_number,
-        vehicle_info: vehicle_info || {}, // Optional vehicle info
-        assigned_orders: [],
-        completed_orders: [],
-      };
-      
-      const driver = new Driver(driverData);
-      savedUser = await driver.save();
-    }
 
     res.status(201).json({ 
       message: "User created successfully", 
       user: {
-        firebaseUID: userResponse.uid,
+        uid: userResponse.uid,
         email: userResponse.email,
         displayName: userResponse.displayName,
-        role: role,
-        mongoData: savedUser
-      },
-      locationInfo: {
-        detectedDistrict: locationData.district,
-        matchType: locationData.matchType,
-        coordinates: {
-          latitude: locationData.latitude,
-          longitude: locationData.longitude
-        },
-        ...(locationData.matchedAlias && { matchedAlias: locationData.matchedAlias })
+        customClaims: {
+          address: address,
+          role: role
+        }
       }
     });
   } catch (error) {
     console.error("Error creating user:", error);
-    
-    // Clean up Firebase user if MongoDB save fails
-    if (error.code === 11000) {
-      return res.status(400).json({ message: "User already exists" });
-    }
-    
     res.status(400).json({ 
       message: "Error creating user", 
       error: error.message 
@@ -172,25 +83,13 @@ export const loginUser = async (req, res) => {
     // Get user details from Firebase Admin SDK
     const userRecord = await admin.auth().getUserByEmail(email);
     
-    // Get user details from MongoDB based on role
-    let mongoUser = null;
-    const role = userRecord.customClaims?.role;
-    
-    if (role === "customer") {
-      mongoUser = await Customer.findOne({ firebaseUID: userRecord.uid });
-    } else if (role === "driver") {
-      mongoUser = await Driver.findOne({ firebaseUID: userRecord.uid });
-    }
-    
     res.status(200).json({ 
       message: "Login successful", 
       user: {
         uid: userRecord.uid,
         email: userRecord.email,
         displayName: userRecord.displayName,
-        role: role,
         customClaims: userRecord.customClaims,
-        profile: mongoUser
       },
       idToken: data.idToken,
       refreshToken: data.refreshToken,
@@ -260,28 +159,47 @@ export const logoutUser = async (req, res) => {
   }
 }
 
-// Get available districts endpoint
-export const getDistricts = (req, res) => {
+export const deleteUser = async (req, res) => {
   try {
-    import('../utils/locationUtils.js').then(({ getAllDistricts, getDistrictInfo }) => {
-      const districts = getAllDistricts();
-      const districtDetails = {};
-      
-      districts.forEach(district => {
-        districtDetails[district] = getDistrictInfo(district);
-      });
+    const { uid } = req.body;
 
-      res.status(200).json({
-        message: "Available districts for location mapping",
-        totalDistricts: districts.length,
-        districts: districtDetails,
-        usage: "Include any of these district names or aliases in your address during signup for automatic coordinate mapping"
+    // Validate input - uid is required
+    if (!uid) {
+      return res.status(400).json({ 
+        message: "UID is required to delete user" 
       });
+    }
+
+    // Get user details before deletion for response
+    let userToDelete;
+    try {
+      userToDelete = await admin.auth().getUser(uid);
+    } catch (error) {
+      return res.status(404).json({ 
+        message: "User not found with provided uid" 
+      });
+    }
+
+    // Delete the user from Firebase Auth
+    await admin.auth().deleteUser(uid);
+
+    res.status(200).json({
+      message: "User deleted successfully",
+      deletedUser: {
+        uid: userToDelete.uid,
+        email: userToDelete.email,
+        displayName: userToDelete.displayName
+      },
+      timestamp: new Date().toISOString()
     });
+
   } catch (error) {
+    console.error("Delete user error:", error);
     res.status(500).json({
-      message: "Error fetching districts",
+      message: "Error deleting user",
       error: error.message
     });
   }
 }
+
+

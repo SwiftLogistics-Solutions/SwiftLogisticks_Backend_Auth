@@ -1,10 +1,10 @@
 import express from "express"
-import {createUser, loginUser, logoutUser, getDistricts} from "../controllers/userController.js"
+import {createUser, loginUser, logoutUser, deleteUser} from "../controllers/userController.js"
 const userRouter = express.Router();
 
 userRouter.post("/signup", createUser);
 userRouter.post("/login", loginUser);
 userRouter.post("/logout", logoutUser);
-userRouter.get("/districts", getDistricts);
+userRouter.delete("/delete", deleteUser);
 
 export default userRouter;
